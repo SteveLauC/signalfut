@@ -1,3 +1,5 @@
+#![doc=include_str!("../README.md")]
+
 use event_listener::Event;
 use event_listener::EventListener;
 use nix::libc::c_int;
@@ -6,7 +8,6 @@ use nix::sys::signal::SaFlags;
 use nix::sys::signal::SigAction;
 use nix::sys::signal::SigHandler;
 use nix::sys::signal::SigSet;
-use nix::sys::signal::Signal;
 use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
@@ -19,9 +20,26 @@ extern "C" fn handler(_: c_int) {
     EVENT_TX.notify(usize::MAX);
 }
 
+pub use nix::sys::signal::Signal;
+
 /// A future that would be resolved when received the specified signal.
+///
+/// # Examples
+///
+/// Wait for `SIGTERM`:
+///
+/// ```rust,no_run
+/// # use monoio::FusionDriver;
+/// # use nix::sys::signal::Signal;
+/// # use async_signal_handler::SignalFut;
+/// #
+/// # async {
+/// let sigterm_fut = SignalFut::new(Signal::SIGTERM);
+/// sigterm_fut.await;
+/// # };
+/// ```
 #[pin_project]
-struct SignalFut {
+pub struct SignalFut {
     signal: Signal,
     #[pin]
     listener: EventListener,

@@ -7,3 +7,6 @@ edition = "2021"
 event-listener = "5.3.1"
 nix = { version = "0.29.0", features = ["signal"] }
 pin-project = "1.1.5"
+
+[dev-dependencies]
+monoio = "0.2.3"
