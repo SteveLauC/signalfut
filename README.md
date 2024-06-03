@@ -8,22 +8,24 @@ Similar to [tokio::signal][link], but can be used with [glommio][g] and [monoio]
 
 ## Examples
 
-Print on “ctrl-c” notification.
+Greet when received either `SIGINT` or `SIGQUIT`:
 
 ```rust,no_run
 use async_signal_handler::ctrl_c;
-use monoio::FusionDriver;
+use async_signal_handler::Signal;
+use async_signal_handler::SignalFut;
 
 fn main() {
-    let mut rt = monoio::RuntimeBuilder::<FusionDriver>::new()
+    let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async move {
-        loop {
-            ctrl_c().await;
-            println!("SIGINT received");
+        tokio::select! {
+            _ = ctrl_c() => {},
+            _ = SignalFut::new(Signal::SIGQUIT) => {},
         }
+        println!("Greeting!");
     });
 }
 ```

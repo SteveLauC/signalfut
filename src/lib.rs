@@ -8,16 +8,26 @@ use nix::sys::signal::SaFlags;
 use nix::sys::signal::SigAction;
 use nix::sys::signal::SigHandler;
 use nix::sys::signal::SigSet;
+use once_cell::sync::Lazy;
 use pin_project::pin_project;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::RwLock;
 use std::task::Context;
 use std::task::Poll;
 
-static EVENT_TX: Event = Event::new();
+static REGISTERED_EVENTS: Lazy<RwLock<HashMap<Signal, Event>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
-extern "C" fn handler(_: c_int) {
-    EVENT_TX.notify(usize::MAX);
+extern "C" fn handler(sig_num: c_int) {
+    let signal = Signal::try_from(sig_num).expect("unknown signal");
+    REGISTERED_EVENTS
+        .read()
+        .unwrap()
+        .get(&signal)
+        .expect("should be registered")
+        .notify(usize::MAX);
 }
 
 pub use nix::sys::signal::Signal;
@@ -48,12 +58,14 @@ pub struct SignalFut {
 impl SignalFut {
     /// Create a `SignalFut` for `signal`.
     pub fn new(signal: Signal) -> SignalFut {
-        let listener = EVENT_TX.listen();
+        let event = Event::new();
+        let listener = event.listen();
 
         let sig_handler = SigHandler::Handler(handler);
         let sig_action = SigAction::new(sig_handler, SaFlags::empty(), SigSet::empty());
         // SAFETY: let's just assume it is safe
         unsafe { sigaction(signal, &sig_action).unwrap() };
+        REGISTERED_EVENTS.write().unwrap().insert(signal, event);
 
         SignalFut { signal, listener }
     }
