@@ -8,7 +8,7 @@ Similar to [tokio::signal][link], but can be used with [glommio][g] and [monoio]
 
 ## Examples
 
-Greet when received either `SIGINT` or `SIGQUIT`:
+Greet when receive either `SIGINT` or `SIGQUIT`:
 
 ```rust,no_run
 use async_signal_handler::ctrl_c;

@@ -10,6 +10,7 @@ use nix::sys::signal::SigHandler;
 use nix::sys::signal::SigSet;
 use once_cell::sync::Lazy;
 use pin_project::pin_project;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -58,16 +59,24 @@ pub struct SignalFut {
 impl SignalFut {
     /// Create a `SignalFut` for `signal`.
     pub fn new(signal: Signal) -> SignalFut {
-        let event = Event::new();
-        let listener = event.listen();
+        let mut registered_events_write_guard = REGISTERED_EVENTS.write().unwrap();
+        match registered_events_write_guard.entry(signal) {
+            Entry::Occupied(event) => {
+                let listener = event.get().listen();
+                SignalFut { signal, listener }
+            }
+            Entry::Vacant(key) => {
+                let event = Event::new();
+                let listener = event.listen();
 
-        let sig_handler = SigHandler::Handler(handler);
-        let sig_action = SigAction::new(sig_handler, SaFlags::empty(), SigSet::empty());
-        // SAFETY: let's just assume it is safe
-        unsafe { sigaction(signal, &sig_action).unwrap() };
-        REGISTERED_EVENTS.write().unwrap().insert(signal, event);
-
-        SignalFut { signal, listener }
+                let sig_handler = SigHandler::Handler(handler);
+                let sig_action = SigAction::new(sig_handler, SaFlags::empty(), SigSet::empty());
+                // SAFETY: let's just assume it is safe
+                unsafe { sigaction(signal, &sig_action).unwrap() };
+                key.insert(event);
+                SignalFut { signal, listener }
+            }
+        }
     }
 }
 
