@@ -29,3 +29,22 @@ fn main() {
     });
 }
 ```
+
+Let multiple tasks wait for the same signal:
+
+```rust,no_run
+use signal_future::ctrl_c;
+
+fn main() {
+    let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let fut1 = ctrl_c();
+        let fut2 = ctrl_c();
+
+        tokio::join!(fut1, fut2);
+    });
+}
+```
