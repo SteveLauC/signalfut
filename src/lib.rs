@@ -15,6 +15,9 @@ use once_cell::sync::Lazy;
 use pin_project::pin_project;
 use std::cell::UnsafeCell;
 use std::future::Future;
+use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
+use std::os::fd::OwnedFd;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -122,23 +125,59 @@ static REGISTERED_EVENTS: Lazy<Vec<RegisteredEvent>> = Lazy::new(|| {
 /// This handler should be signal-safe if `event_listener::Event::notify()` is
 /// signal safe.
 extern "C" fn handler(sig_num: c_int) {
-    let sig_num = sig_num as usize;
-
-    if !REGISTERED_EVENTS[sig_num]
-        .registered
-        .load(Ordering::Relaxed)
-    {
-        unreachable!("Event is not registered, but the signal disposition works, which should be impossible.");
-    }
-
     // SAFETY:
-    //
-    // 1. The value should be `Some` and complete since we read it after checking
-    //    the `registered` sign.
-    // 2. No one will `.set()` it, we only set it once.
-    unsafe {
-        REGISTERED_EVENTS[sig_num].event.get().notify(usize::MAX);
-    }
+    // TODO
+    let tx = unsafe { TO_HELPER_THREAD.as_ref().unwrap() };
+    nix::unistd::write(tx.as_fd(), &[sig_num as u8]).unwrap();
+}
+
+/// To ensure that `set_up_helper_thread()` will be only called once.
+static SET_UP_HELPER_THREAD_ONCE: Once = Once::new();
+/// The tx end of the pipe.
+///
+/// It is declared as mut and we will directly modify it, which is actually safe
+/// since there will be only 1 thread that does this.
+static mut TO_HELPER_THREAD: Option<OwnedFd> = None;
+
+/// Set up the helper thread
+fn set_up_helper_thread() {
+    SET_UP_HELPER_THREAD_ONCE.call_once(|| {
+        // create a pipe
+        let (rx, tx) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).unwrap();
+        // SAFETY:
+        // TODO
+        unsafe { TO_HELPER_THREAD = Some(tx) };
+
+        // start a helper thread
+        std::thread::spawn(move  || {
+            let mut sig_num = [0_u8;1];
+            loop {
+                let n_read = nix::unistd::read(rx.as_raw_fd(), &mut sig_num).unwrap();
+                if n_read == 0 {
+                    unreachable!("unexpected EOF")
+                }
+                assert_eq!(n_read, 1);
+
+                let sig_num = sig_num[0] as usize;
+
+                if !REGISTERED_EVENTS[sig_num]
+                    .registered
+                    .load(Ordering::Relaxed)
+                {
+                    unreachable!("Event is not registered, but the signal disposition works, which should be impossible.");
+                }
+
+                // SAFETY:
+                //
+                // 1. The value should be `Some` and complete since we read it after checking
+                //    the `registered` sign.
+                // 2. No one will `.set()` it, we only set it once.
+                unsafe {
+                    REGISTERED_EVENTS[sig_num].event.get().notify(usize::MAX);
+                }
+            }
+        });
+    })
 }
 
 /// A future that would be resolved when received the specified signal.
@@ -167,6 +206,8 @@ pub struct SignalFut {
 impl SignalFut {
     /// Create a `SignalFut` for `signal`.
     pub fn new(signal: Signal) -> SignalFut {
+        set_up_helper_thread();
+
         let sig_num = signal as usize;
         if REGISTERED_EVENTS[sig_num]
             .registered
