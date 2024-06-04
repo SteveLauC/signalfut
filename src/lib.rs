@@ -1,73 +1,44 @@
 #![doc=include_str!("../README.md")]
 
-use event_listener::Event;
-use event_listener::EventListener;
+use atomic_waker::AtomicWaker;
 use nix::libc::c_int;
 use nix::sys::signal::sigaction;
 use nix::sys::signal::SaFlags;
 use nix::sys::signal::SigAction;
 use nix::sys::signal::SigHandler;
 use nix::sys::signal::SigSet;
+pub use nix::sys::signal::Signal;
 use once_cell::sync::Lazy;
-use pin_project::pin_project;
 use std::cell::UnsafeCell;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::sync::Once;
 use std::task::Context;
 use std::task::Poll;
 
-#[derive(Debug)]
-struct UnsafeCellOptEvent(UnsafeCell<Option<Event>>);
+/// The inner structure of our `SignalFut`.
+struct FutInner {
+    /// Corresponding Signal
+    signal: Signal,
+    /// The task waker
+    waker: AtomicWaker,
+    /// Has 1 pending signal
+    pending: AtomicBool,
+}
 
-unsafe impl Sync for UnsafeCellOptEvent {}
-
-impl UnsafeCellOptEvent {
-    fn new() -> Self {
-        UnsafeCellOptEvent(UnsafeCell::new(None))
-    }
-
-    unsafe fn get(&self) -> &Option<Event> {
-        unsafe { &*self.0.get() }
-    }
-
-    unsafe fn set(&self, event: Event) {
-        let ptr = self.0.get();
-        unsafe {
-            *ptr = Some(event);
+impl FutInner {
+    /// Create a `FutInner` that has no `waker` and pending signal.
+    fn new(signal: usize) -> Self {
+        Self {
+            signal: Signal::try_from(signal as i32).expect("invalid signal number"),
+            waker: AtomicWaker::new(),
+            pending: AtomicBool::new(false),
         }
     }
 }
-
-static REGISTERED_EVENTS: Lazy<Vec<(AtomicBool, Once, UnsafeCellOptEvent)>> = Lazy::new(|| {
-    let n_signal = nix::libc::SIGRTMAX() as usize;
-    (0..n_signal)
-        .map(|_| {
-            (
-                AtomicBool::new(false),
-                Once::new(),
-                UnsafeCellOptEvent::new(),
-            )
-        })
-        .collect()
-});
-
-extern "C" fn handler(sig_num: c_int) {
-    let sig_num = sig_num as usize;
-    debug_assert!(REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed));
-    unsafe {
-        REGISTERED_EVENTS[sig_num]
-            .2
-            .get()
-            .as_ref()
-            .expect("event should be set")
-            .notify(usize::MAX);
-    }
-}
-
-pub use nix::sys::signal::Signal;
 
 /// A future that would be resolved when received the specified signal.
 ///
@@ -85,60 +56,54 @@ pub use nix::sys::signal::Signal;
 /// sigterm_fut.await;
 /// # };
 /// ```
-#[pin_project]
-pub struct SignalFut {
-    signal: Signal,
-    #[pin]
-    listener: EventListener,
-}
+#[derive(Clone)]
+pub struct SignalFut(Arc<FutInner>);
 
 impl SignalFut {
-    /// Create a `SignalFut` for `signal`.
-    pub fn new(signal: Signal) -> SignalFut {
+    pub fn new(signal: Signal) -> Self {
         let sig_num = signal as usize;
-        if REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed) {
-            let listener = unsafe {
-                REGISTERED_EVENTS[sig_num]
-                    .2
-                    .get()
-                    .as_ref()
-                    .expect("TODO")
-                    .listen()
-            };
-            return SignalFut { signal, listener };
+
+        // This signal has already been registered
+        if REGISTERED_SIGNALS[sig_num].0.load(Ordering::Relaxed) {
+            let fut = SignalFut::clone(unsafe { REGISTERED_SIGNALS[sig_num].2.get() });
+            return fut;
         }
 
-        REGISTERED_EVENTS[sig_num].1.call_once(|| {
-            // Create event
-            let event = Event::new();
-            unsafe {
-                REGISTERED_EVENTS[sig_num].2.set(event);
-            }
+        // need to register it
+        REGISTERED_SIGNALS[sig_num].1.call_once(|| {
+            let fut = SignalFut(Arc::new(FutInner::new(sig_num)));
+            unsafe { REGISTERED_SIGNALS[sig_num].2.set(fut) };
 
             // dispose the signal
             let sig_handler = SigHandler::Handler(handler);
             let sig_action = SigAction::new(sig_handler, SaFlags::empty(), SigSet::empty());
             // SAFETY:
-            // if `event-listener::Event::notify(usize::MAX)` is signal-safe, then it is safe.
             unsafe { sigaction(signal, &sig_action).unwrap() };
 
             // Set the initialized mark
-            REGISTERED_EVENTS[sig_num].0.store(true, Ordering::Relaxed);
+            REGISTERED_SIGNALS[sig_num].0.store(true, Ordering::Relaxed);
         });
 
-        if !REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed) {
-            panic!("failed to set signal handler");
+        if !REGISTERED_SIGNALS[sig_num].0.load(Ordering::Relaxed) {
+            panic!("failed to register the signal");
         }
 
-        let listener = unsafe {
-            REGISTERED_EVENTS[sig_num]
-                .2
-                .get()
-                .as_ref()
-                .expect("TODO")
-                .listen()
-        };
-        SignalFut { signal, listener }
+        SignalFut::clone(unsafe { REGISTERED_SIGNALS[sig_num].2.get() })
+    }
+
+    /// Return the inner `Signal`.
+    pub fn signal(&self) -> Signal {
+        self.0.signal
+    }
+
+    /// Will be invoked when the corresponding signal is received.
+    ///
+    /// # Signal-safe
+    ///
+    /// This function has to be signal-safe because it will be used in the signal handler.
+    fn add_signal(&self) {
+        self.0.pending.store(true, Ordering::Relaxed);
+        self.0.waker.wake();
     }
 }
 
@@ -146,8 +111,75 @@ impl Future for SignalFut {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        this.listener.poll(cx)
+        self.0.waker.register(cx.waker());
+
+        if self.0.pending.load(Ordering::Relaxed) {
+            self.0.pending.store(false, Ordering::Relaxed);
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+/// Define a wrapper type for `UnsafeCell<Option<T>>` so that we can impl `Sync`
+/// for it.
+struct UnsafeOption<T>(UnsafeCell<Option<T>>);
+
+impl<T> UnsafeOption<T> {
+    /// Create an `UnsafeOption` and set it to `None`.
+    fn none() -> Self {
+        Self(UnsafeCell::new(None))
+    }
+
+    /// Set the inner `T` value.
+    ///
+    /// # Safety
+    ///
+    /// 1. You have to ensure no one is reading this through `.get()`.
+    ///
+    /// # Dirty write
+    ///
+    /// When calling concurrently from multiple threads, the inner `T` value can be
+    /// incomplete.
+    unsafe fn set(&self, val: T) {
+        let ptr = self.0.get();
+        *ptr = Some(val);
+    }
+
+    /// Get a reference to the inner `T`.
+    ///
+    /// # Safety
+    ///
+    /// 1. You have to ensure tha the inner `Option` is `Some`.
+    /// 2. You have to ensure the write operation to the inner `T` is complete.
+    /// 2. You have to ensure that no one is `.set()`ting it during the lifetime
+    ///    of the returned `&T`.
+    unsafe fn get(&self) -> &T {
+        let ptr = self.0.get();
+        (*ptr).as_ref().expect("should be Some")
+    }
+}
+
+/// SAFETY:
+unsafe impl<T: Sync> Sync for UnsafeOption<T> {}
+
+static REGISTERED_SIGNALS: Lazy<Vec<(AtomicBool, Once, UnsafeOption<SignalFut>)>> =
+    Lazy::new(|| {
+        let n_signal = nix::libc::SIGRTMAX() as usize;
+        (0..n_signal)
+            .map(|_| (AtomicBool::new(false), Once::new(), UnsafeOption::none()))
+            .collect()
+    });
+
+/// The signal handler.
+extern "C" fn handler(sig_num: c_int) {
+    let sig_num = sig_num as usize;
+    if REGISTERED_SIGNALS[sig_num].0.load(Ordering::Relaxed) {
+        let fut = unsafe { REGISTERED_SIGNALS[sig_num].2.get() };
+        fut.add_signal();
+    } else {
+        panic!()
     }
 }
 
@@ -201,11 +233,11 @@ mod tests {
     #[tokio::test]
     async fn multiple_futures_with_tokio_select() {
         let sigint_fut = SignalFut::new(Signal::SIGINT);
-        let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+        let sigterm_fut = SignalFut::new(Signal::SIGTERM);
         kill(Pid::this(), Signal::SIGTERM).unwrap();
         tokio::select! {
             _ = sigint_fut => {},
-            _ = sigquit_fut => {},
+            _ = sigterm_fut => {},
         }
     }
 
