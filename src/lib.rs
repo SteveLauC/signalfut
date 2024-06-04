@@ -78,7 +78,7 @@ pub use nix::sys::signal::Signal;
 /// ```rust,no_run
 /// # use monoio::FusionDriver;
 /// # use nix::sys::signal::Signal;
-/// # use async_signal_handler::SignalFut;
+/// # use signal_future::SignalFut;
 /// #
 /// # async {
 /// let sigterm_fut = SignalFut::new(Signal::SIGTERM);
