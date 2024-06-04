@@ -190,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // glommio is Linux-only
     fn sigint_with_glommio() {
         glommio::LocalExecutorBuilder::default()
             .spawn(|| async {
