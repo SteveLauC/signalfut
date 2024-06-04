@@ -42,8 +42,12 @@ impl UnsafeCellOptEvent {
 }
 
 static REGISTERED_EVENTS: Lazy<Vec<(AtomicBool, Once, UnsafeCellOptEvent)>> = Lazy::new(|| {
+    #[cfg(target_os = "linux")]
     let n_signal = nix::libc::SIGRTMAX() as usize;
-    (0..n_signal)
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let n_signal = 33;
+
+    (0..=n_signal)
         .map(|_| {
             (
                 AtomicBool::new(false),
