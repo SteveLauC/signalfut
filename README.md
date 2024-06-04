@@ -1,4 +1,4 @@
-## Async signal handler
+## signal-future
 
 Similar to [tokio::signal][link], but can be used with [glommio][g] and [monoio][m].
 
@@ -11,9 +11,9 @@ Similar to [tokio::signal][link], but can be used with [glommio][g] and [monoio]
 Greet when receive either `SIGINT` or `SIGQUIT`:
 
 ```rust,no_run
-use async_signal_handler::ctrl_c;
-use async_signal_handler::Signal;
-use async_signal_handler::SignalFut;
+use signal_future::ctrl_c;
+use signal_future::Signal;
+use signal_future::SignalFut;
 
 fn main() {
     let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
