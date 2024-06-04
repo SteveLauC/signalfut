@@ -15,5 +15,7 @@ pin-project = "1.1.5"
 # the `sync` feature is enabled.
 monoio ={ version =  "0.2.3", features = ["sync"] }
 tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "time"] }
-glommio = "0.9.0"
 futures = "0.3.30"
+
+[target.'cfg(target_os="linux")'.dev-dependencies]
+glommio = "0.9.0"

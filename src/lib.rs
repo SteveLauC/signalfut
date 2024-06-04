@@ -1,4 +1,5 @@
 #![doc=include_str!("../README.md")]
+#![cfg(unix)]
 
 use event_listener::Event;
 use event_listener::EventListener;
