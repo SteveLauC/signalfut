@@ -1,5 +1,7 @@
 #![doc=include_str!("../README.md")]
 #![cfg(unix)]
+#![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(unused)]
 
 use event_listener::Event;
 use event_listener::EventListener;
@@ -20,59 +22,124 @@ use std::sync::Once;
 use std::task::Context;
 use std::task::Poll;
 
-#[derive(Debug)]
-struct UnsafeCellOptEvent(UnsafeCell<Option<Event>>);
+pub use nix::sys::signal::Signal;
 
-unsafe impl Sync for UnsafeCellOptEvent {}
+/// A wrapper type for `UnsafeCell<Option<T>>` so that we can impl `Sync`
+/// for it.
+struct UnsafeOption<T>(UnsafeCell<Option<T>>);
 
-impl UnsafeCellOptEvent {
-    fn new() -> Self {
-        UnsafeCellOptEvent(UnsafeCell::new(None))
+impl<T> UnsafeOption<T> {
+    /// Create an `UnsafeOption` and set it to `None`.
+    fn none() -> Self {
+        Self(UnsafeCell::new(None))
     }
 
-    unsafe fn get(&self) -> &Option<Event> {
-        unsafe { &*self.0.get() }
-    }
-
-    unsafe fn set(&self, event: Event) {
+    /// Set the inner `T` value.
+    ///
+    /// # Safety
+    ///
+    /// 1. You have to ensure no one is reading this through `.get()`.
+    /// 2. When calling concurrently from multiple threads, the inner `T` value
+    ///    can be deterministic.
+    unsafe fn set(&self, val: T) {
         let ptr = self.0.get();
-        unsafe {
-            *ptr = Some(event);
+        *ptr = Some(val);
+    }
+
+    /// Get a reference to the inner `T`.
+    ///
+    /// # Safety
+    ///
+    /// 1. You have to ensure tha the inner `Option` is `Some`.
+    /// 2. You have to ensure the write operation to the inner `T` is complete.
+    /// 2. You have to ensure that no one is `.set()`ting it during the lifetime
+    ///    of the returned `&T`.
+    unsafe fn get(&self) -> &T {
+        let ptr = self.0.get();
+        (*ptr).as_ref().expect("should be Some")
+    }
+}
+
+/// SAFETY:
+///
+/// In this crate's usage, we:
+///
+/// 1. Write the variable (by ONLY 1 thread, controlled by `std::sync::Once`)
+/// 2. Set the atomic flag, which means from now on, we can read the variable
+/// 3. Only read the variable during the remaining lifetime
+///
+/// So it should be safe to mark this type `Sync`.
+unsafe impl<T: Sync> Sync for UnsafeOption<T> {}
+
+/// A event that may or may not be registered.
+struct RegisteredEvent {
+    /// An atomic flag indicating if this event has been registered.
+    registered: AtomicBool,
+    /// Use the `std::sync::Once` to ensure that ONLY one thread will successfully
+    /// register the event when there are multiple threads doing it concurrently.
+    ///
+    /// From the doc:
+    ///
+    /// > This method will block the calling thread if another initialization
+    /// > routine is currently running.
+    ///
+    /// so it can be blocking, but shouldn't block for a long time, which is
+    /// acceptable.
+    once: Once,
+    /// Will be `Some(event_listener::Event)` after registration.
+    event: UnsafeOption<Event>,
+}
+
+impl RegisteredEvent {
+    /// Create a `RegisteredEvent` that has not been registered.
+    fn unregistered() -> Self {
+        Self {
+            registered: AtomicBool::new(false),
+            once: Once::new(),
+            event: UnsafeOption::none(),
         }
     }
 }
 
-static REGISTERED_EVENTS: Lazy<Vec<(AtomicBool, Once, UnsafeCellOptEvent)>> = Lazy::new(|| {
+/// An fixed-length array of `RegisteredEvent`.
+///
+/// We use the signal number (start from 1) as the index.
+static REGISTERED_EVENTS: Lazy<Vec<RegisteredEvent>> = Lazy::new(|| {
     #[cfg(target_os = "linux")]
     let n_signal = nix::libc::SIGRTMAX() as usize;
     #[cfg(all(unix, not(target_os = "linux")))]
     let n_signal = 33;
 
     (0..=n_signal)
-        .map(|_| {
-            (
-                AtomicBool::new(false),
-                Once::new(),
-                UnsafeCellOptEvent::new(),
-            )
-        })
+        .map(|_| RegisteredEvent::unregistered())
         .collect()
 });
 
+/// The signal handler
+///
+/// # Signal-safety
+///
+/// This handler should be signal-safe if `event_listener::Event::notify()` is
+/// signal safe.
 extern "C" fn handler(sig_num: c_int) {
     let sig_num = sig_num as usize;
-    debug_assert!(REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed));
+
+    if !REGISTERED_EVENTS[sig_num]
+        .registered
+        .load(Ordering::Relaxed)
+    {
+        unreachable!("Event is not registered, but the signal disposition works, which should be impossible.");
+    }
+
+    // SAFETY:
+    //
+    // 1. The value should be `Some` and complete since we read it after checking
+    //    the `registered` sign.
+    // 2. No one will `.set()` it, we only set it once.
     unsafe {
-        REGISTERED_EVENTS[sig_num]
-            .2
-            .get()
-            .as_ref()
-            .expect("event should be set")
-            .notify(usize::MAX);
+        REGISTERED_EVENTS[sig_num].event.get().notify(usize::MAX);
     }
 }
-
-pub use nix::sys::signal::Signal;
 
 /// A future that would be resolved when received the specified signal.
 ///
@@ -101,23 +168,29 @@ impl SignalFut {
     /// Create a `SignalFut` for `signal`.
     pub fn new(signal: Signal) -> SignalFut {
         let sig_num = signal as usize;
-        if REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed) {
-            let listener = unsafe {
-                REGISTERED_EVENTS[sig_num]
-                    .2
-                    .get()
-                    .as_ref()
-                    .expect("TODO")
-                    .listen()
-            };
+        if REGISTERED_EVENTS[sig_num]
+            .registered
+            .load(Ordering::Relaxed)
+        {
+            // SAFETY:
+            //
+            // 1. The value should be `Some` and complete since we read it after checking
+            //    the `registered` sign.
+            // 2. No one will `.set()` it, we only set it once.
+            let event = unsafe { REGISTERED_EVENTS[sig_num].event.get() };
+            let listener = event.listen();
             return SignalFut { signal, listener };
         }
 
-        REGISTERED_EVENTS[sig_num].1.call_once(|| {
+        REGISTERED_EVENTS[sig_num].once.call_once(|| {
             // Create event
             let event = Event::new();
+            // SAFETY:
+            //
+            // 1. No one is reading this because the `registered` sign is still `false`
+            // 2. No concurrent calls exist (guarded by `std::sync::Once`)
             unsafe {
-                REGISTERED_EVENTS[sig_num].2.set(event);
+                REGISTERED_EVENTS[sig_num].event.set(event);
             }
 
             // dispose the signal
@@ -128,21 +201,25 @@ impl SignalFut {
             unsafe { sigaction(signal, &sig_action).unwrap() };
 
             // Set the initialized mark
-            REGISTERED_EVENTS[sig_num].0.store(true, Ordering::Relaxed);
+            REGISTERED_EVENTS[sig_num]
+                .registered
+                .store(true, Ordering::Relaxed);
         });
 
-        if !REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed) {
+        if !REGISTERED_EVENTS[sig_num]
+            .registered
+            .load(Ordering::Relaxed)
+        {
             panic!("failed to set signal handler");
         }
 
-        let listener = unsafe {
-            REGISTERED_EVENTS[sig_num]
-                .2
-                .get()
-                .as_ref()
-                .expect("TODO")
-                .listen()
-        };
+        // SAFETY:
+        //
+        // 1. The value should be `Some` and complete since we read it after checking
+        //    the `registered` sign.
+        // 2. No one will `.set()` it, we only set it once.
+        let event = unsafe { REGISTERED_EVENTS[sig_num].event.get() };
+        let listener = event.listen();
         SignalFut { signal, listener }
     }
 }
