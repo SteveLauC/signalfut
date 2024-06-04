@@ -15,13 +15,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::Once;
 use std::task::Context;
 use std::task::Poll;
 
 #[derive(Debug)]
 struct UnsafeCellOptEvent(UnsafeCell<Option<Event>>);
 
-unsafe impl Send for UnsafeCellOptEvent {}
 unsafe impl Sync for UnsafeCellOptEvent {}
 
 impl UnsafeCellOptEvent {
@@ -29,11 +29,11 @@ impl UnsafeCellOptEvent {
         UnsafeCellOptEvent(UnsafeCell::new(None))
     }
 
-    fn get(&self) -> &Option<Event> {
+    unsafe fn get(&self) -> &Option<Event> {
         unsafe { &*self.0.get() }
     }
 
-    fn set(&self, event: Event) {
+    unsafe fn set(&self, event: Event) {
         let ptr = self.0.get();
         unsafe {
             *ptr = Some(event);
@@ -41,24 +41,30 @@ impl UnsafeCellOptEvent {
     }
 }
 
-static REGISTERED_EVENTS: Lazy<Vec<(AtomicBool, UnsafeCellOptEvent)>> = Lazy::new(|| {
+static REGISTERED_EVENTS: Lazy<Vec<(AtomicBool, Once, UnsafeCellOptEvent)>> = Lazy::new(|| {
     let n_signal = nix::libc::SIGRTMAX() as usize;
     (0..n_signal)
-        .map(|_| (AtomicBool::new(false), UnsafeCellOptEvent::new()))
+        .map(|_| {
+            (
+                AtomicBool::new(false),
+                Once::new(),
+                UnsafeCellOptEvent::new(),
+            )
+        })
         .collect()
 });
 
 extern "C" fn handler(sig_num: c_int) {
     let sig_num = sig_num as usize;
     debug_assert!(REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed));
-    REGISTERED_EVENTS
-        .get(sig_num)
-        .expect("all the signal numbers should be smaller than libc::SIGRTMAX")
-        .1
-        .get()
-        .as_ref()
-        .expect("event should be set")
-        .notify(usize::MAX);
+    unsafe {
+        REGISTERED_EVENTS[sig_num]
+            .2
+            .get()
+            .as_ref()
+            .expect("event should be set")
+            .notify(usize::MAX);
+    }
 }
 
 pub use nix::sys::signal::Signal;
@@ -90,54 +96,49 @@ impl SignalFut {
     /// Create a `SignalFut` for `signal`.
     pub fn new(signal: Signal) -> SignalFut {
         let sig_num = signal as usize;
-        let has_event = REGISTERED_EVENTS
-            .get(sig_num)
-            .expect("all the signal numbers should be smaller than libc::SIGRTMAX")
-            .0
-            .load(Ordering::Relaxed);
+        if REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed) {
+            let listener = unsafe {
+                REGISTERED_EVENTS[sig_num]
+                    .2
+                    .get()
+                    .as_ref()
+                    .expect("TODO")
+                    .listen()
+            };
+            return SignalFut { signal, listener };
+        }
 
-        if has_event {
-            let listener = REGISTERED_EVENTS
-                .get(sig_num)
-                .expect("")
-                .1
-                .get()
-                .as_ref()
-                .expect("")
-                .listen();
-            SignalFut { signal, listener }
-        } else {
-            // do the job
+        REGISTERED_EVENTS[sig_num].1.call_once(|| {
+            // Create event
             let event = Event::new();
-            let listener = event.listen();
-            REGISTERED_EVENTS.get(sig_num).expect("").1.set(event);
+            unsafe {
+                REGISTERED_EVENTS[sig_num].2.set(event);
+            }
+
+            // dispose the signal
             let sig_handler = SigHandler::Handler(handler);
             let sig_action = SigAction::new(sig_handler, SaFlags::empty(), SigSet::empty());
-            // SAFETY: let's just assume it is safe
+            // SAFETY:
+            // if `event-listener::Event::notify(usize::MAX)` is signal-safe, then it is safe.
             unsafe { sigaction(signal, &sig_action).unwrap() };
 
-            // then race
-            let res = REGISTERED_EVENTS
-                .get(sig_num)
-                .expect("")
-                .0
-                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed);
+            // Set the initialized mark
+            REGISTERED_EVENTS[sig_num].0.store(true, Ordering::Relaxed);
+        });
 
-            match res {
-                Ok(_) => SignalFut { signal, listener },
-                Err(_) => {
-                    let listener = REGISTERED_EVENTS
-                        .get(sig_num)
-                        .expect("")
-                        .1
-                        .get()
-                        .as_ref()
-                        .expect("")
-                        .listen();
-                    SignalFut { signal, listener }
-                }
-            }
+        if !REGISTERED_EVENTS[sig_num].0.load(Ordering::Relaxed) {
+            panic!("failed to set signal handler");
         }
+
+        let listener = unsafe {
+            REGISTERED_EVENTS[sig_num]
+                .2
+                .get()
+                .as_ref()
+                .expect("TODO")
+                .listen()
+        };
+        SignalFut { signal, listener }
     }
 }
 
@@ -162,9 +163,9 @@ mod tests {
     use nix::unistd::Pid;
 
     #[monoio::test]
-    async fn sighup_with_monoio() {
-        let fut = SignalFut::new(Signal::SIGHUP);
-        kill(Pid::this(), Signal::SIGHUP).unwrap();
+    async fn sigint_with_monoio() {
+        let fut = SignalFut::new(Signal::SIGINT);
+        kill(Pid::this(), Signal::SIGINT).unwrap();
         fut.await;
     }
 
@@ -176,20 +177,20 @@ mod tests {
     }
 
     #[test]
-    fn sigquit_with_futures_block_on() {
+    fn signt_with_futures_block_on() {
         futures::executor::block_on(async move {
-            let fut = SignalFut::new(Signal::SIGQUIT);
-            kill(Pid::this(), Signal::SIGQUIT).unwrap();
+            let fut = SignalFut::new(Signal::SIGINT);
+            kill(Pid::this(), Signal::SIGINT).unwrap();
             fut.await;
         });
     }
 
     #[test]
-    fn sigill_with_glommio() {
+    fn sigint_with_glommio() {
         glommio::LocalExecutorBuilder::default()
             .spawn(|| async {
-                let fut = SignalFut::new(Signal::SIGILL);
-                kill(Pid::this(), Signal::SIGILL).unwrap();
+                let fut = SignalFut::new(Signal::SIGINT);
+                kill(Pid::this(), Signal::SIGINT).unwrap();
                 fut.await;
             })
             .unwrap()
@@ -199,8 +200,8 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_futures_with_tokio_select() {
-        let sigint_fut = SignalFut::new(Signal::SIGTERM);
-        let sigquit_fut = SignalFut::new(Signal::SIGABRT);
+        let sigint_fut = SignalFut::new(Signal::SIGINT);
+        let sigquit_fut = SignalFut::new(Signal::SIGTERM);
         kill(Pid::this(), Signal::SIGTERM).unwrap();
         tokio::select! {
             _ = sigint_fut => {},
@@ -211,10 +212,10 @@ mod tests {
     #[tokio::test]
     async fn multiple_tasks_waiting_for_same_signal() {
         let task1 = async {
-            SignalFut::new(Signal::SIGURG).await;
+            SignalFut::new(Signal::SIGINT).await;
         };
         let task2 = async {
-            SignalFut::new(Signal::SIGURG).await;
+            SignalFut::new(Signal::SIGINT).await;
         };
 
         let handle1 = tokio::spawn(task1);
@@ -224,7 +225,7 @@ mod tests {
         // at least once so that signal handler can be set.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        kill(Pid::this(), Signal::SIGURG).unwrap();
+        kill(Pid::this(), Signal::SIGINT).unwrap();
 
         handle1.await.unwrap();
         handle2.await.unwrap();
