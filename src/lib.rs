@@ -491,6 +491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // glommio is Linux-only
     fn multiple_tasks_waiting_for_same_signal_with_glommio() {
         let main_task = async {
             let task1 = SignalFut::new(Signal::SIGINT);
