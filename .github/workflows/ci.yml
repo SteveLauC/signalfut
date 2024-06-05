@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  MSRV: 1.69.0
 
 jobs:
   main:
@@ -37,3 +38,23 @@ jobs:
 
       - name: Unit tests
         run: cargo test
+
+  check_msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with: 
+          toolchain: '${{ env.MSRV }}'
+          components: clippy, rustfmt
+
+        # adopted from: 
+        # https://github.com/rust-lang/cargo/issues/5133#issuecomment-1307094647
+      - name: Clear dev deps
+        run: sed -i 's/\[dev-dependencies]/[workaround-avoid-dev-deps]/g' Cargo.toml
+
+      - name: Check build
+        run: cargo build

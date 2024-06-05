@@ -1,7 +1,21 @@
 [package]
-name = "signal_future"
+name = "signalfut"
+description = "A future similar to tokio::signal::unix::Signal, but can be used with all the runtimes"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.69"
+authors = ["SteveLauC <stevelauc@outlook.com>"]
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/SteveLauC/signalfut"
+categories = ["asynchronous"]
+keywords = ["signal"]
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
 
 [dependencies]
 event-listener = "5.3.1"

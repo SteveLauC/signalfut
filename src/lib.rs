@@ -192,8 +192,8 @@ fn set_up_helper_thread() {
 /// Wait for `SIGTERM`:
 ///
 /// ```rust,no_run
-/// # use signal_future::SignalFut;
-/// # use signal_future::Signal;
+/// # use signalfut::SignalFut;
+/// # use signalfut::Signal;
 /// #
 /// # async {
 /// let sigterm_fut = SignalFut::new(Signal::SIGTERM);
