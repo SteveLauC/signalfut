@@ -1,9 +1,6 @@
 /// Return a pipe, with `O_CLOEXEC` set.
 use std::os::fd::OwnedFd;
 
-#[cfg(all(unix, not(target_os = "linux")))]
-use nix::unistd::pipe;
-
 /// Return a pipe, with `O_CLOEXEC` set.
 #[cfg(target_os = "linux")]
 pub(crate) fn pipe() -> (OwnedFd, OwnedFd) {
