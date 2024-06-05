@@ -1,4 +1,10 @@
-## signal-future
+# signalfut
+
+[![crates.io](https://img.shields.io/crates/v/signalfut?style=flat-square&logo=rust)](https://crates.io/crates/signalfut)
+[![docs.rs](https://img.shields.io/badge/docs.rs-signalfut-blue?style=flat-square&logo=docs.rs)](https://docs.rs/signalfut)
+[![msrv](https://img.shields.io/badge/msrv-1.69-blue?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![BUILD](https://github.com/stevelauc/signalfut/workflows/Rust/badge.svg)](https://github.com/stevelauc/signalfut/actions/workflows/ci.yml)
+
 
 A future similar to [tokio::signal::unix::Signal][link], but can be used with:
 
@@ -22,9 +28,9 @@ the future.
 Greet when receive either `SIGINT` or `SIGQUIT`:
 
 ```rust,no_run
-use signal_future::ctrl_c;
-use signal_future::Signal;
-use signal_future::SignalFut;
+use signalfut::ctrl_c;
+use signalfut::Signal;
+use signalfut::SignalFut;
 
 #[tokio::main]
 async fn main() {
@@ -39,7 +45,7 @@ async fn main() {
 Let multiple tasks wait for the same signal:
 
 ```rust,no_run
-use signal_future::ctrl_c;
+use signalfut::ctrl_c;
 
 #[tokio::main]
 async fn main() {
