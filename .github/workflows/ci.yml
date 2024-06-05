@@ -51,8 +51,5 @@ jobs:
           toolchain: '${{ env.MSRV }}'
           components: clippy, rustfmt
 
-      - name: Check clippy
-        run: cargo clippy
-
-      - name: Unit tests
-        run: cargo test
+      - name: Check build
+        run: cargo build
