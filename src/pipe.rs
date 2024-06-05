@@ -29,4 +29,6 @@ pub(crate) fn pipe() -> (OwnedFd, OwnedFd) {
 
     nix::fcntl::fcntl(rx.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(rx_flag)).unwrap();
     nix::fcntl::fcntl(tx.as_raw_fd(), nix::fcntl::FcntlArg::F_SETFL(tx_flag)).unwrap();
+
+    (rx, tx)
 }
