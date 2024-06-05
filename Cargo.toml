@@ -13,9 +13,12 @@ pin-project = "1.1.5"
 # the sync feature is necessary as in our test, `waker.wake()` will be invoked
 # by a thread other than the runtime thread, such a `wake()` will ONLY work if
 # the `sync` feature is enabled.
-monoio ={ version =  "0.2.3", features = ["sync"] }
+monoio = { version = "0.2.3", features = ["sync"] }
 tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "time"] }
 futures = "0.3.30"
+smol = "2.0.0"
+compio = { version = "0.10.0", features = ["macros", "runtime", "time"] }
+async-std = { version = "1.12.0", features = ["attributes"] }
 
 [target.'cfg(target_os="linux")'.dev-dependencies]
 glommio = "0.9.0"

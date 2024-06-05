@@ -1,7 +1,10 @@
 #![doc=include_str!("../README.md")]
-#![cfg(unix)]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unused)]
+#![deny(missing_docs)]
+
+mod pipe;
 
 use event_listener::Event;
 use event_listener::EventListener;
@@ -122,12 +125,13 @@ static REGISTERED_EVENTS: Lazy<Vec<RegisteredEvent>> = Lazy::new(|| {
 ///
 /// # Signal-safety
 ///
-/// This handler should be signal-safe if `event_listener::Event::notify()` is
-/// signal safe.
+/// `write(2)` is signal-safe.
 extern "C" fn handler(sig_num: c_int) {
     // SAFETY:
-    // TODO
-    let tx = unsafe { TO_HELPER_THREAD.as_ref().unwrap() };
+    //
+    // 1. It is guaranteed to be initialized
+    // 2. `TO_HELPER_THREAD` will ONLY be initialized once
+    let tx = unsafe { TO_HELPER_THREAD.as_ref().unwrap_unchecked() };
     nix::unistd::write(tx.as_fd(), &[sig_num as u8]).unwrap();
 }
 
@@ -143,9 +147,10 @@ static mut TO_HELPER_THREAD: Option<OwnedFd> = None;
 fn set_up_helper_thread() {
     SET_UP_HELPER_THREAD_ONCE.call_once(|| {
         // create a pipe
-        let (rx, tx) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).unwrap();
+        let (rx, tx) = pipe::pipe();
         // SAFETY:
-        // TODO
+        // It is safety to directly modify this global variable since there will
+        // be only one thread that does so (guarded by `std::sync::Once`)
         unsafe { TO_HELPER_THREAD = Some(tx) };
 
         // start a helper thread
@@ -180,16 +185,15 @@ fn set_up_helper_thread() {
     })
 }
 
-/// A future that would be resolved when received the specified signal.
+/// A future that would be resolved when receive the specified signal.
 ///
 /// # Examples
 ///
 /// Wait for `SIGTERM`:
 ///
 /// ```rust,no_run
-/// # use monoio::FusionDriver;
-/// # use nix::sys::signal::Signal;
 /// # use signal_future::SignalFut;
+/// # use signal_future::Signal;
 /// #
 /// # async {
 /// let sigterm_fut = SignalFut::new(Signal::SIGTERM);
@@ -285,13 +289,6 @@ mod tests {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
 
-    #[monoio::test]
-    async fn sigint_with_monoio() {
-        let fut = SignalFut::new(Signal::SIGINT);
-        kill(Pid::this(), Signal::SIGINT).unwrap();
-        fut.await;
-    }
-
     #[tokio::test]
     async fn sigint_with_tokio() {
         let fut = SignalFut::new(Signal::SIGINT);
@@ -299,8 +296,31 @@ mod tests {
         fut.await;
     }
 
+    #[monoio::test]
+    async fn sigint_with_monoio() {
+        let fut = SignalFut::new(Signal::SIGINT);
+        kill(Pid::this(), Signal::SIGINT).unwrap();
+        fut.await;
+    }
+
     #[test]
-    fn signt_with_futures_block_on() {
+    fn sigint_with_smol() {
+        smol::block_on(async {
+            let fut = SignalFut::new(Signal::SIGINT);
+            kill(Pid::this(), Signal::SIGINT).unwrap();
+            fut.await;
+        });
+    }
+
+    #[compio::test]
+    async fn sigint_with_compio() {
+        let fut = SignalFut::new(Signal::SIGINT);
+        kill(Pid::this(), Signal::SIGINT).unwrap();
+        fut.await;
+    }
+
+    #[test]
+    fn signt_with_futures() {
         futures::executor::block_on(async move {
             let fut = SignalFut::new(Signal::SIGINT);
             kill(Pid::this(), Signal::SIGINT).unwrap();
@@ -311,19 +331,97 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")] // glommio is Linux-only
     fn sigint_with_glommio() {
-        glommio::LocalExecutorBuilder::default()
-            .spawn(|| async {
-                let fut = SignalFut::new(Signal::SIGINT);
-                kill(Pid::this(), Signal::SIGINT).unwrap();
-                fut.await;
-            })
-            .unwrap()
-            .join()
-            .unwrap();
+        let rt = glommio::LocalExecutorBuilder::default().make().unwrap();
+        rt.run(async {
+            let fut = SignalFut::new(Signal::SIGINT);
+            kill(Pid::this(), Signal::SIGINT).unwrap();
+            fut.await;
+        });
+    }
+
+    #[async_std::test]
+    async fn sigint_with_async_std() {
+        let fut = SignalFut::new(Signal::SIGINT);
+        kill(Pid::this(), Signal::SIGINT).unwrap();
+        fut.await;
     }
 
     #[tokio::test]
-    async fn multiple_futures_with_tokio_select() {
+    async fn select_multiple_futures_with_tokio() {
+        let sigint_fut = SignalFut::new(Signal::SIGINT);
+        let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+        kill(Pid::this(), Signal::SIGTERM).unwrap();
+        tokio::select! {
+            _ = sigint_fut => {},
+            _ = sigquit_fut => {},
+        }
+    }
+
+    #[monoio::test]
+    async fn select_multiple_futures_with_monoio() {
+        let sigint_fut = SignalFut::new(Signal::SIGINT);
+        let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+        kill(Pid::this(), Signal::SIGTERM).unwrap();
+        tokio::select! {
+            _ = sigint_fut => {},
+            _ = sigquit_fut => {},
+        }
+    }
+
+    #[test]
+    fn select_multiple_futures_with_smol() {
+        smol::block_on(async {
+            let sigint_fut = SignalFut::new(Signal::SIGINT);
+            let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+            kill(Pid::this(), Signal::SIGTERM).unwrap();
+            tokio::select! {
+                _ = sigint_fut => {},
+                _ = sigquit_fut => {},
+            }
+        });
+    }
+
+    #[compio::test]
+    async fn select_multiple_futures_with_compio() {
+        let sigint_fut = SignalFut::new(Signal::SIGINT);
+        let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+        kill(Pid::this(), Signal::SIGTERM).unwrap();
+        tokio::select! {
+            _ = sigint_fut => {},
+            _ = sigquit_fut => {},
+        }
+    }
+
+    #[test]
+    fn select_multiple_futures_with_futures() {
+        futures::executor::block_on(async {
+            let sigint_fut = SignalFut::new(Signal::SIGINT);
+            let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+            kill(Pid::this(), Signal::SIGTERM).unwrap();
+            tokio::select! {
+                _ = sigint_fut => {},
+                _ = sigquit_fut => {},
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")] // glommio is Linux-only
+    fn select_multiple_futures_with_glommio() {
+        let rt = glommio::LocalExecutorBuilder::default().make().unwrap();
+        rt.run(async {
+            let sigint_fut = SignalFut::new(Signal::SIGINT);
+            let sigquit_fut = SignalFut::new(Signal::SIGTERM);
+            kill(Pid::this(), Signal::SIGTERM).unwrap();
+            tokio::select! {
+                _ = sigint_fut => {},
+                _ = sigquit_fut => {},
+            }
+        });
+    }
+
+    #[async_std::test]
+    async fn select_multiple_futures_with_async_std() {
         let sigint_fut = SignalFut::new(Signal::SIGINT);
         let sigquit_fut = SignalFut::new(Signal::SIGTERM);
         kill(Pid::this(), Signal::SIGTERM).unwrap();
@@ -334,13 +432,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multiple_tasks_waiting_for_same_signal() {
-        let task1 = async {
-            SignalFut::new(Signal::SIGINT).await;
-        };
-        let task2 = async {
-            SignalFut::new(Signal::SIGINT).await;
-        };
+    async fn multiple_tasks_waiting_for_same_signal_with_tokio() {
+        let task1 = SignalFut::new(Signal::SIGINT);
+        let task2 = SignalFut::new(Signal::SIGINT);
 
         let handle1 = tokio::spawn(task1);
         let handle2 = tokio::spawn(task2);
@@ -353,5 +447,88 @@ mod tests {
 
         handle1.await.unwrap();
         handle2.await.unwrap();
+    }
+
+    #[test]
+    fn multiple_tasks_waiting_for_same_signal_with_monoio() {
+        let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let task1 = SignalFut::new(Signal::SIGINT);
+            let task2 = SignalFut::new(Signal::SIGINT);
+
+            let handle1 = monoio::spawn(task1);
+            let handle2 = monoio::spawn(task2);
+
+            // sleep for 1 second to ensure that task1 and task2 will be polled for
+            // at least once so that signal handler can be set.
+            monoio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            kill(Pid::this(), Signal::SIGINT).unwrap();
+
+            handle1.await;
+            handle2.await;
+        });
+    }
+
+    #[compio::test]
+    async fn multiple_tasks_waiting_for_same_signal_with_compio() {
+        let task1 = SignalFut::new(Signal::SIGINT);
+        let task2 = SignalFut::new(Signal::SIGINT);
+
+        let handle1 = compio::runtime::spawn(task1);
+        let handle2 = compio::runtime::spawn(task2);
+
+        // sleep for 1 second to ensure that task1 and task2 will be polled for
+        // at least once so that signal handler can be set.
+        compio::runtime::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        kill(Pid::this(), Signal::SIGINT).unwrap();
+
+        handle1.await;
+        handle2.await;
+    }
+
+    #[test]
+    fn multiple_tasks_waiting_for_same_signal_with_glommio() {
+        let main_task = async {
+            let task1 = SignalFut::new(Signal::SIGINT);
+            let task2 = SignalFut::new(Signal::SIGINT);
+
+            let handle1 = glommio::spawn_local(task1);
+            let handle2 = glommio::spawn_local(task2);
+
+            // sleep for 1 second to ensure that task1 and task2 will be polled for
+            // at least once so that signal handler can be set.
+            glommio::timer::sleep(std::time::Duration::from_secs(1)).await;
+
+            kill(Pid::this(), Signal::SIGINT).unwrap();
+
+            handle1.await;
+            handle2.await;
+        };
+
+        let rt = glommio::LocalExecutorBuilder::default().make().unwrap();
+        rt.run(main_task);
+    }
+
+    #[async_std::test]
+    async fn multiple_tasks_waiting_for_same_signal_with_async_std() {
+        let task1 = SignalFut::new(Signal::SIGINT);
+        let task2 = SignalFut::new(Signal::SIGINT);
+
+        let handle1 = async_std::task::spawn(task1);
+        let handle2 = async_std::task::spawn(task2);
+
+        // sleep for 1 second to ensure that task1 and task2 will be polled for
+        // at least once so that signal handler can be set.
+        async_std::task::sleep(std::time::Duration::from_secs(1)).await;
+
+        kill(Pid::this(), Signal::SIGINT).unwrap();
+
+        handle1.await;
+        handle2.await;
     }
 }
