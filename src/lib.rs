@@ -241,8 +241,7 @@ impl SignalFut {
             // dispose the signal
             let sig_handler = SigHandler::Handler(handler);
             let sig_action = SigAction::new(sig_handler, SaFlags::empty(), SigSet::empty());
-            // SAFETY:
-            // if `event-listener::Event::notify(usize::MAX)` is signal-safe, then it is safe.
+            // SAFETY: the signal handler is safe
             unsafe { sigaction(signal, &sig_action).unwrap() };
 
             // Set the initialized mark
