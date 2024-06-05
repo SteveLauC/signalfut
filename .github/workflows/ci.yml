@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  MSRV: 1.69.0
 
 jobs:
   main:
@@ -31,6 +32,24 @@ jobs:
 
       - name: Check format
         run: cargo fmt --all --check
+
+      - name: Check clippy
+        run: cargo clippy
+
+      - name: Unit tests
+        run: cargo test
+
+  check_msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with: 
+          toolchain: '${{ env.MSRV }}'
+          components: clippy, rustfmt
 
       - name: Check clippy
         run: cargo clippy
