@@ -54,10 +54,7 @@ jobs:
         # adopted from: 
         # https://github.com/rust-lang/cargo/issues/5133#issuecomment-1307094647
       - name: Clear dev deps
-        run: |
-          pwd
-          ls -al
-          sed -i 's/\[dev-dependencies]/[workaround-avoid-dev-deps]/g' ./signalfut/Cargo.toml
+        run: sed -i 's/\[dev-dependencies]/[workaround-avoid-dev-deps]/g' Cargo.toml
 
       - name: Check build
         run: cargo build
