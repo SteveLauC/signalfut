@@ -4,6 +4,7 @@
 [![docs.rs](https://img.shields.io/badge/docs.rs-signalfut-blue?style=flat-square&logo=docs.rs)](https://docs.rs/signalfut)
 [![msrv](https://img.shields.io/badge/msrv-1.69-blue?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![BUILD](https://github.com/stevelauc/signalfut/workflows/ci/badge.svg)](https://github.com/stevelauc/signalfut/actions/workflows/ci.yml)
+![Crates.io](https://img.shields.io/crates/d/signalfut?color=orange)
 
 
 A future similar to [tokio::signal::unix::Signal][link], but can be used with:
