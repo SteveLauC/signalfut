@@ -1,4 +1,4 @@
-/// Return a pipe, with `O_CLOEXEC` set.
+/// Return a pipe, with `CLOEXEC` set.
 use std::os::fd::OwnedFd;
 
 /// Return a pipe, with `O_CLOEXEC` set.
@@ -7,23 +7,18 @@ pub(crate) fn pipe() -> (OwnedFd, OwnedFd) {
     nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).unwrap()
 }
 
-/// Return a pipe, with `O_CLOEXEC` set.
+/// Return a pipe, with `FD_CLOEXEC` set.
 #[cfg(target_os = "macos")]
 pub(crate) fn pipe() -> (OwnedFd, OwnedFd) {
-    let (rx, tx) = nix::unistd::pipe().unwrap();
-    let mut rx_flag = nix::fcntl::OFlag::from_bits(
-        nix::fcntl::fcntl(&rx, nix::fcntl::FcntlArg::F_GETFL).unwrap(),
-    )
-    .unwrap();
-    rx_flag.insert(nix::fcntl::OFlag::O_CLOEXEC);
-    let mut tx_flag = nix::fcntl::OFlag::from_bits(
-        nix::fcntl::fcntl(&tx, nix::fcntl::FcntlArg::F_GETFL).unwrap(),
-    )
-    .unwrap();
-    tx_flag.insert(nix::fcntl::OFlag::O_CLOEXEC);
+    use nix::fcntl::fcntl;
+    use nix::fcntl::FcntlArg;
+    use nix::fcntl::FdFlag;
+    use nix::unistd::pipe;
 
-    nix::fcntl::fcntl(&rx, nix::fcntl::FcntlArg::F_SETFL(rx_flag)).unwrap();
-    nix::fcntl::fcntl(&tx, nix::fcntl::FcntlArg::F_SETFL(tx_flag)).unwrap();
+    let (rx, tx) = pipe().unwrap();
+
+    fcntl(&rx, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).unwrap();
+    fcntl(&tx, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).unwrap();
 
     (rx, tx)
 }
