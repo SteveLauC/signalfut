@@ -18,8 +18,6 @@ use once_cell::sync::Lazy;
 use pin_project::pin_project;
 use std::cell::UnsafeCell;
 use std::future::Future;
-use std::os::fd::AsFd;
-use std::os::fd::AsRawFd;
 use std::os::fd::OwnedFd;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
@@ -132,7 +130,7 @@ extern "C" fn handler(sig_num: c_int) {
     // 1. It is guaranteed to be initialized
     // 2. `TO_HELPER_THREAD` will ONLY be initialized once
     let tx = unsafe { TO_HELPER_THREAD.as_ref().unwrap_unchecked() };
-    nix::unistd::write(tx.as_fd(), &[sig_num as u8]).unwrap();
+    nix::unistd::write(tx, &[sig_num as u8]).unwrap();
 }
 
 /// To ensure that `set_up_helper_thread()` will be only called once.
@@ -157,7 +155,7 @@ fn set_up_helper_thread() {
         std::thread::spawn(move  || {
             let mut sig_num = [0_u8;1];
             loop {
-                let n_read = nix::unistd::read(rx.as_raw_fd(), &mut sig_num).unwrap();
+                let n_read = nix::unistd::read(&rx, &mut sig_num).unwrap();
                 if n_read == 0 {
                     unreachable!("unexpected EOF")
                 }
