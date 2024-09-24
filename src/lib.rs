@@ -151,8 +151,8 @@ fn set_up_helper_thread() {
         // be only one thread that does so (guarded by `std::sync::Once`)
         unsafe { TO_HELPER_THREAD = Some(tx) };
 
-        // start a helper thread
-        std::thread::spawn(move  || {
+        // start the helper thread
+        std::thread::Builder::new().name("signalfut-helper-thread".into()).spawn(move  || {
             let mut sig_num = [0_u8;1];
             loop {
                 let n_read = nix::unistd::read(&rx, &mut sig_num).unwrap();
@@ -179,7 +179,7 @@ fn set_up_helper_thread() {
                     REGISTERED_EVENTS[sig_num].event.get().notify(usize::MAX);
                 }
             }
-        });
+        }).expect("failed to spawn the 'signalfut-helper-thread'");
     })
 }
 
