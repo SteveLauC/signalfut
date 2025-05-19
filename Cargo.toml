@@ -1,7 +1,7 @@
 [package]
 name = "signalfut"
 description = "A future similar to tokio::signal::unix::Signal, but can be used with all the runtimes"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.69"
 authors = ["SteveLauC <stevelauc@outlook.com>"]
@@ -19,7 +19,7 @@ targets = [
 
 [dependencies]
 event-listener = "5.3.1"
-nix = { git = "https://github.com/nix-rust/nix", features = ["signal", "fs"] }
+nix = { version = "0.30.1", features = ["signal", "fs"] }
 once_cell = "1.19.0"
 pin-project = "1.1.5"
 
